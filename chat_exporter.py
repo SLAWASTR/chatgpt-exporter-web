@@ -6,6 +6,7 @@
 """
 
 import datetime
+import http.cookiejar
 import json
 import os
 import re
@@ -52,14 +53,79 @@ def normalize_chat_url(url_or_id: str) -> Tuple[str, str]:
     )
 
 
-def fetch_chat_html(url: str, timeout: int = 20) -> str:
+def create_http_session() -> urllib.request.OpenerDirector:
     """
-    Загружает HTML-код публичной страницы чата ChatGPT.
+    Создает urllib opener с сохранением Cookie и отключенной строгой проверкой SSL
+    (необходимо для стабильной работы на macOS и серверах без предустановленных корневых сертификатов).
     """
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
+    cj = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(cj),
+        urllib.request.HTTPSHandler(context=ctx),
+    )
+    return opener
 
+
+def resolve_shared_file_download_url(
+    file_id: str,
+    shared_id: str,
+    session: Optional[urllib.request.OpenerDirector] = None,
+    timeout: int = 8,
+) -> Optional[str]:
+    """
+    Получает прямую временную ссылку на скачивание/просмотр пользовательского фото
+    из расшаренного чата ChatGPT через официальный анонимный эндпоинт.
+    """
+    if not file_id or not shared_id:
+        return None
+
+    clean_file_id = file_id.strip()
+    if clean_file_id.startswith("sediment://"):
+        clean_file_id = clean_file_id[len("sediment://"):]
+    if "?" in clean_file_id:
+        clean_file_id = clean_file_id.split("?")[0]
+
+    api_url = f"https://chatgpt.com/backend-anon/files/download/{clean_file_id}?shared_conversation_id={shared_id}"
+    req = urllib.request.Request(
+        api_url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Referer": f"https://chatgpt.com/share/{shared_id}",
+            "Accept": "application/json",
+        },
+    )
+
+    try:
+        if session:
+            resp = session.open(req, timeout=timeout)
+        else:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            resp = urllib.request.urlopen(req, timeout=timeout, context=ctx)
+        data = json.loads(resp.read().decode("utf-8"))
+        if data.get("status") == "success" and data.get("download_url"):
+            return data["download_url"]
+    except Exception:
+        pass
+    return None
+
+
+def fetch_chat_html(
+    url: str,
+    timeout: int = 20,
+    session: Optional[urllib.request.OpenerDirector] = None,
+) -> str:
+    """
+    Загружает HTML-код публичной страницы чата ChatGPT с сохранением cookie сессии.
+    """
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -72,7 +138,15 @@ def fetch_chat_html(url: str, timeout: int = 20) -> str:
 
     req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as response:
+        if session:
+            response = session.open(req, timeout=timeout)
+        else:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            response = urllib.request.urlopen(req, timeout=timeout, context=ctx)
+
+        with response:
             charset = response.headers.get_content_charset() or "utf-8"
             html_bytes = response.read()
             return html_bytes.decode(charset, errors="replace")
@@ -258,7 +332,11 @@ def clean_chatgpt_text(text: str) -> str:
     return text.strip()
 
 
-def parse_conversation_data(conv_data: Dict[str, Any]) -> Dict[str, Any]:
+def parse_conversation_data(
+    conv_data: Dict[str, Any],
+    shared_id: Optional[str] = None,
+    session: Optional[urllib.request.OpenerDirector] = None,
+) -> Dict[str, Any]:
     """
     Приводит сырые данные диалога к структурированному виду с извлечением:
       - title: название чата
@@ -296,7 +374,18 @@ def parse_conversation_data(conv_data: Dict[str, Any]) -> Dict[str, Any]:
         chain.reverse()
         raw_nodes = chain
 
+    # Если shared_id не был передан явно, ищем его в метаданных сообщений
+    if not shared_id:
+        for item in raw_nodes:
+            m_obj = item.get("message")
+            if m_obj and m_obj.get("metadata", {}).get("shared_conversation_id"):
+                shared_id = m_obj["metadata"]["shared_conversation_id"]
+                break
+
     messages: List[Dict[str, Any]] = []
+
+    # Кеш для избежания повторных запросов одного и того же файла
+    resolved_file_cache: Dict[str, str] = {}
 
     for item in raw_nodes:
         msg = item.get("message")
@@ -314,6 +403,8 @@ def parse_conversation_data(conv_data: Dict[str, Any]) -> Dict[str, Any]:
 
         # 1. Извлекаем прикрепленные пользователем файлы/фото
         attachments: List[Dict[str, Any]] = []
+        images: List[str] = []
+
         for att in meta.get("attachments", []):
             name = att.get("name") or "Прикрепленное фото"
             sz_bytes = att.get("size") or 0
@@ -321,18 +412,31 @@ def parse_conversation_data(conv_data: Dict[str, Any]) -> Dict[str, Any]:
             w = att.get("width")
             h = att.get("height")
             dim = f"{w}x{h}" if w and h else ""
+            att_id = att.get("id", "")
+
+            # Пытаемся получить живую ссылку на фото пользователя через OpenAI API
+            att_url = None
+            if att_id and shared_id and session:
+                if att_id not in resolved_file_cache:
+                    resolved_file_cache[att_id] = resolve_shared_file_download_url(att_id, shared_id, session) or ""
+                att_url = resolved_file_cache[att_id] or None
+
             attachments.append({
                 "name": name,
                 "size_kb": sz_kb,
                 "dimensions": dim,
                 "mime_type": att.get("mime_type", ""),
-                "id": att.get("id", ""),
+                "id": att_id,
+                "url": att_url,
             })
+
+            # Если это картинка/фото пользователя — добавляем её в общий список картинок для галереи и PDF
+            if att_url and att_url not in images:
+                images.append(att_url)
 
         # 2. Извлекаем текст и ссылки на изображения
         parts = content.get("parts", [])
         text_parts: List[str] = []
-        images: List[str] = []
 
         for p in parts:
             if isinstance(p, str):
@@ -343,8 +447,19 @@ def parse_conversation_data(conv_data: Dict[str, Any]) -> Dict[str, Any]:
                     if img_url not in images:
                         images.append(img_url)
             elif isinstance(p, dict):
-                # Внутренние структуры DALL-E или картинки
-                if "image_url" in p and p["image_url"] not in images:
+                # Внутренние структуры ChatGPT/DALL-E или картинки
+                content_type = p.get("content_type", "")
+                if content_type == "image_asset_pointer":
+                    ap = p.get("asset_pointer", "")
+                    fid_m = re.search(r"file_[a-zA-Z0-9]+", ap)
+                    if fid_m and shared_id and session:
+                        fid = fid_m.group(0)
+                        if fid not in resolved_file_cache:
+                            resolved_file_cache[fid] = resolve_shared_file_download_url(fid, shared_id, session) or ""
+                        resolved_img = resolved_file_cache[fid]
+                        if resolved_img and resolved_img not in images:
+                            images.append(resolved_img)
+                elif "image_url" in p and p["image_url"] not in images:
                     images.append(p["image_url"])
                 elif "url" in p and p["url"] not in images:
                     images.append(p["url"])
@@ -625,7 +740,12 @@ def format_chat_to_html(
 
         for att in m.get("attachments", []):
             dim_str = f" • {att['dimensions']}" if att.get("dimensions") else ""
-            html_parts.append(f"      <div class='attachment-box'>📷 {att['name']} ({att.get('size_kb', 0)} КБ{dim_str})</div>")
+            if att.get("url"):
+                safe_att_url = att["url"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("'", "%27")
+                att_label = f"<a href='{safe_att_url}' target='_blank' style='color:inherit;text-decoration:underline;'>{att['name']}</a>"
+            else:
+                att_label = att["name"]
+            html_parts.append(f"      <div class='attachment-box'>📷 {att_label} ({att.get('size_kb', 0)} КБ{dim_str})</div>")
 
         # Экранируем текст для безопасного вывода в HTML
         safe_text = m["text"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -673,9 +793,10 @@ def export_chat(
     Основная функция: скачивает, парсит и сохраняет чат в файл .txt.
     """
     clean_url, share_id = normalize_chat_url(url_or_id)
-    html = fetch_chat_html(clean_url)
+    session = create_http_session()
+    html = fetch_chat_html(clean_url, session=session)
     conv_data = extract_conversation_from_html(html)
-    parsed = parse_conversation_data(conv_data)
+    parsed = parse_conversation_data(conv_data, shared_id=share_id, session=session)
     txt_content = format_chat_to_text(
         parsed,
         source_url=clean_url,

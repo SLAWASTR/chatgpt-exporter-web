@@ -7,6 +7,7 @@ from http.server import BaseHTTPRequestHandler
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from chat_exporter import (
+    create_http_session,
     extract_conversation_from_html,
     fetch_chat_html,
     format_chat_to_html,
@@ -53,9 +54,10 @@ class handler(BaseHTTPRequestHandler):
                 raise ValueError("Пожалуйста, укажите ссылку на чат ChatGPT.")
 
             clean_url, share_id = normalize_chat_url(url)
-            html = fetch_chat_html(clean_url)
+            session = create_http_session()
+            html = fetch_chat_html(clean_url, session=session)
             conv_data = extract_conversation_from_html(html)
-            parsed = parse_conversation_data(conv_data)
+            parsed = parse_conversation_data(conv_data, shared_id=share_id, session=session)
 
             txt_content = format_chat_to_text(
                 parsed,

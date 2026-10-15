@@ -136,7 +136,11 @@ function renderResult(data) {
           const attBox = document.createElement("div");
           attBox.className = "attachment-box";
           const dimStr = att.dimensions ? ` • ${escapeHtml(att.dimensions)}` : "";
-          attBox.innerHTML = `📷 <strong>${escapeHtml(att.name)}</strong> (${att.size_kb} КБ${dimStr})`;
+          if (att.url) {
+            attBox.innerHTML = `📷 <a href="${escapeHtml(att.url)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline;"><strong>${escapeHtml(att.name)}</strong></a> (${att.size_kb} КБ${dimStr})`;
+          } else {
+            attBox.innerHTML = `📷 <strong>${escapeHtml(att.name)}</strong> (${att.size_kb} КБ${dimStr})`;
+          }
           bubble.appendChild(attBox);
         });
       }
