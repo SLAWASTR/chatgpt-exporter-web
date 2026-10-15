@@ -101,19 +101,27 @@ function renderResult(data) {
   resModelBadge.textContent = data.model_name || "GPT";
   resMsgCount.textContent = `Сообщений: ${data.messages ? data.messages.length : 0}`;
 
-  // Считаем общее число картинок и вложений
+  // Считаем общее число картинок и файлов
   let totalImages = 0;
-  let totalAttachments = 0;
+  let totalFiles = 0;
   if (data.messages) {
     data.messages.forEach((m) => {
       if (m.images) totalImages += m.images.length;
-      if (m.attachments) totalAttachments += m.attachments.length;
+      if (m.attachments) {
+        m.attachments.forEach((a) => {
+          if (!a.is_image) totalFiles++;
+        });
+      }
     });
   }
 
-  if (totalImages > 0 || totalAttachments > 0) {
+  const badgeParts = [];
+  if (totalImages > 0) badgeParts.push(`🖼️ Фото: ${totalImages}`);
+  if (totalFiles > 0) badgeParts.push(`📎 Файлов: ${totalFiles}`);
+
+  if (badgeParts.length > 0) {
     resImgBadge.style.display = "inline-block";
-    resImgBadge.textContent = `🖼️ Фото/картинок: ${totalImages + totalAttachments}`;
+    resImgBadge.textContent = badgeParts.join(" • ");
   } else {
     resImgBadge.style.display = "none";
   }
@@ -135,11 +143,39 @@ function renderResult(data) {
         msg.attachments.forEach((att) => {
           const attBox = document.createElement("div");
           attBox.className = "attachment-box";
+          const icon = att.icon || "📎";
           const dimStr = att.dimensions ? ` • ${escapeHtml(att.dimensions)}` : "";
+          const sizeStr = `${att.size_kb} КБ${dimStr}`;
+          const isImg = !!att.is_image;
+          const btnText = isImg ? "Открыть фото" : "Скачать файл";
+
           if (att.url) {
-            attBox.innerHTML = `📷 <a href="${escapeHtml(att.url)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline;"><strong>${escapeHtml(att.name)}</strong></a> (${att.size_kb} КБ${dimStr})`;
+            attBox.innerHTML = `
+              <span class="att-icon">${icon}</span>
+              <div class="att-info">
+                <a href="${escapeHtml(att.url)}" target="_blank" rel="noopener" class="att-name">${escapeHtml(att.name)}</a>
+                <span class="att-meta">${sizeStr}</span>
+              </div>
+              <a href="${escapeHtml(att.url)}" target="_blank" rel="noopener" class="att-btn">⬇️ ${btnText}</a>
+            `;
+          } else if (att.error === "safety_check_failed") {
+            attBox.className = "attachment-box att-warning";
+            attBox.innerHTML = `
+              <span class="att-icon">${icon}</span>
+              <div class="att-info">
+                <span class="att-name">${escapeHtml(att.name)}</span>
+                <span class="att-meta">${sizeStr}</span>
+                <div class="att-warn-text">⚠️ Заблокировано фильтром безопасности OpenAI (safety check)</div>
+              </div>
+            `;
           } else {
-            attBox.innerHTML = `📷 <strong>${escapeHtml(att.name)}</strong> (${att.size_kb} КБ${dimStr})`;
+            attBox.innerHTML = `
+              <span class="att-icon">${icon}</span>
+              <div class="att-info">
+                <span class="att-name">${escapeHtml(att.name)}</span>
+                <span class="att-meta">${sizeStr}</span>
+              </div>
+            `;
           }
           bubble.appendChild(attBox);
         });

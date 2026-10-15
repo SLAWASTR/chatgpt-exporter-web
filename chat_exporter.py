@@ -69,18 +69,50 @@ def create_http_session() -> urllib.request.OpenerDirector:
     return opener
 
 
+def is_image_file(name: str = "", mime_type: str = "") -> bool:
+    """Определяет, является ли файл изображением (по MIME или расширению)."""
+    if mime_type and mime_type.startswith("image/"):
+        return True
+    ext = os.path.splitext((name or "").lower())[1]
+    return ext in [".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".svg", ".heic", ".ico"]
+
+
+def get_file_icon(name: str = "", mime_type: str = "") -> str:
+    """Возвращает наглядный эмодзи-значок в зависимости от формата файла."""
+    ext = os.path.splitext((name or "").lower())[1]
+    mime = (mime_type or "").lower()
+    if ext == ".pdf" or "pdf" in mime:
+        return "📕"
+    elif ext in [".xls", ".xlsx", ".csv", ".tsv"] or "spreadsheet" in mime or "excel" in mime:
+        return "📊"
+    elif ext in [".doc", ".docx"] or "word" in mime or "document" in mime:
+        return "📄"
+    elif ext in [".zip", ".rar", ".7z", ".tar", ".gz"]:
+        return "📦"
+    elif ext in [".py", ".js", ".ts", ".html", ".css", ".json", ".xml", ".sql", ".sh", ".c", ".cpp"]:
+        return "💻"
+    elif is_image_file(name, mime_type):
+        return "📷"
+    elif ext in [".mp3", ".wav", ".ogg", ".m4a"]:
+        return "🎵"
+    elif ext in [".mp4", ".mov", ".avi", ".mkv", ".webm"]:
+        return "🎬"
+    return "📎"
+
+
 def resolve_shared_file_download_url(
     file_id: str,
     shared_id: str,
     session: Optional[urllib.request.OpenerDirector] = None,
     timeout: int = 8,
-) -> Optional[str]:
+) -> Tuple[Optional[str], Optional[str]]:
     """
-    Получает прямую временную ссылку на скачивание/просмотр пользовательского фото
+    Получает прямую временную ссылку на скачивание/просмотр пользовательского файла (фото, pdf, xlsx и т.д.)
     из расшаренного чата ChatGPT через официальный анонимный эндпоинт.
+    Возвращает (download_url, error_code).
     """
     if not file_id or not shared_id:
-        return None
+        return None, None
 
     clean_file_id = file_id.strip()
     if clean_file_id.startswith("sediment://"):
@@ -112,10 +144,14 @@ def resolve_shared_file_download_url(
             resp = urllib.request.urlopen(req, timeout=timeout, context=ctx)
         data = json.loads(resp.read().decode("utf-8"))
         if data.get("status") == "success" and data.get("download_url"):
-            return data["download_url"]
-    except Exception:
-        pass
-    return None
+            return data["download_url"], None
+        elif data.get("error_code") == "safety_check_failed":
+            return None, "safety_check_failed"
+        elif data.get("error_code"):
+            return None, data["error_code"]
+    except Exception as e:
+        return None, str(e)
+    return None, None
 
 
 def fetch_chat_html(
@@ -406,32 +442,38 @@ def parse_conversation_data(
         images: List[str] = []
 
         for att in meta.get("attachments", []):
-            name = att.get("name") or "Прикрепленное фото"
+            name = att.get("name") or "Вложенный файл"
             sz_bytes = att.get("size") or 0
             sz_kb = sz_bytes // 1024
             w = att.get("width")
             h = att.get("height")
             dim = f"{w}x{h}" if w and h else ""
             att_id = att.get("id", "")
+            mime = att.get("mime_type", "")
+            is_img = is_image_file(name, mime)
 
-            # Пытаемся получить живую ссылку на фото пользователя через OpenAI API
+            # Пытаемся получить живую ссылку на файл пользователя через OpenAI API
             att_url = None
+            err_code = None
             if att_id and shared_id and session:
                 if att_id not in resolved_file_cache:
-                    resolved_file_cache[att_id] = resolve_shared_file_download_url(att_id, shared_id, session) or ""
-                att_url = resolved_file_cache[att_id] or None
+                    resolved_file_cache[att_id] = resolve_shared_file_download_url(att_id, shared_id, session)
+                att_url, err_code = resolved_file_cache[att_id]
 
             attachments.append({
                 "name": name,
                 "size_kb": sz_kb,
                 "dimensions": dim,
-                "mime_type": att.get("mime_type", ""),
+                "mime_type": mime,
                 "id": att_id,
                 "url": att_url,
+                "is_image": is_img,
+                "icon": get_file_icon(name, mime),
+                "error": err_code,
             })
 
-            # Если это картинка/фото пользователя — добавляем её в общий список картинок для галереи и PDF
-            if att_url and att_url not in images:
+            # В галерею картинок и PDF добавляем ТОЛЬКО настоящие изображения (не PDF, не Excel и т.д.)
+            if is_img and att_url and att_url not in images:
                 images.append(att_url)
 
         # 2. Извлекаем текст и ссылки на изображения
@@ -455,8 +497,8 @@ def parse_conversation_data(
                     if fid_m and shared_id and session:
                         fid = fid_m.group(0)
                         if fid not in resolved_file_cache:
-                            resolved_file_cache[fid] = resolve_shared_file_download_url(fid, shared_id, session) or ""
-                        resolved_img = resolved_file_cache[fid]
+                            resolved_file_cache[fid] = resolve_shared_file_download_url(fid, shared_id, session)
+                        resolved_img, _ = resolved_file_cache[fid]
                         if resolved_img and resolved_img not in images:
                             images.append(resolved_img)
                 elif "image_url" in p and p["image_url"] not in images:
@@ -562,8 +604,14 @@ def format_chat_to_text(
 
         # Выводим инфо о прикрепленных фото/файлах
         for att in m.get("attachments", []):
+            icon = att.get("icon") or "📎"
             dim_str = f", {att['dimensions']}" if att.get("dimensions") else ""
-            lines.append(f"📷 [Прикрепленный файл: {att['name']} ({att.get('size_kb', 0)} КБ{dim_str})]")
+            if att.get("url"):
+                lines.append(f"{icon} [Прикрепленный файл: {att['name']} ({att.get('size_kb', 0)} КБ{dim_str}) -> {att['url']}]")
+            elif att.get("error") == "safety_check_failed":
+                lines.append(f"{icon} [Прикрепленный файл: {att['name']} ({att.get('size_kb', 0)} КБ{dim_str}) — заблокировано фильтром безопасности OpenAI]")
+            else:
+                lines.append(f"{icon} [Прикрепленный файл: {att['name']} ({att.get('size_kb', 0)} КБ{dim_str})]")
 
         if m["text"]:
             lines.append(m["text"])
@@ -681,18 +729,40 @@ def format_chat_to_html(
         "    }",
         "    .msg-body { font-size: 15px; white-space: pre-wrap; word-break: break-word; }",
         "    .attachment-box {",
-        "      display: inline-flex;",
+        "      display: flex;",
         "      align-items: center;",
-        "      gap: 8px;",
-        "      padding: 8px 12px;",
-        "      background: #f1f5f9;",
+        "      gap: 12px;",
+        "      padding: 10px 14px;",
+        "      background: #f8fafc;",
         "      border: 1px solid #cbd5e1;",
         "      border-radius: 8px;",
         "      font-size: 13px;",
-        "      font-weight: 600;",
         "      margin-bottom: 12px;",
         "      color: #334155;",
         "    }",
+        "    .att-icon { font-size: 20px; line-height: 1; flex-shrink: 0; }",
+        "    .att-info { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }",
+        "    .att-name { font-weight: 600; color: #1e293b; text-decoration: none; word-break: break-all; }",
+        "    .att-name:hover { text-decoration: underline; color: #2563eb; }",
+        "    .att-meta { font-size: 11px; color: #64748b; }",
+        "    .att-btn {",
+        "      display: inline-flex;",
+        "      align-items: center;",
+        "      gap: 4px;",
+        "      padding: 6px 12px;",
+        "      background: #3b82f6;",
+        "      color: #ffffff !important;",
+        "      border-radius: 6px;",
+        "      text-decoration: none !important;",
+        "      font-size: 12px;",
+        "      font-weight: 600;",
+        "      white-space: nowrap;",
+        "      flex-shrink: 0;",
+        "      transition: background 0.15s;",
+        "    }",
+        "    .att-btn:hover { background: #2563eb; }",
+        "    .att-warning { background: #fffbeb; border-color: #fde68a; }",
+        "    .att-warn-text { font-size: 11px; color: #b45309; font-weight: 500; margin-top: 2px; }",
         "    .image-grid {",
         "      display: grid;",
         "      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));",
@@ -717,6 +787,7 @@ def format_chat_to_html(
         "      .header { box-shadow: none; border-color: #cbd5e1; }",
         "      .message { box-shadow: none; border: 1px solid #cbd5e1; }",
         "      .image-card img { height: 140px; }",
+        "      .att-btn { display: none; }",
         "    }",
         "  </style>",
         "</head>",
@@ -739,13 +810,46 @@ def format_chat_to_html(
         html_parts.append(f"      <div class='msg-header'><span>{role_label}</span><span>{dt_str}</span></div>")
 
         for att in m.get("attachments", []):
+            icon = att.get("icon") or "📎"
             dim_str = f" • {att['dimensions']}" if att.get("dimensions") else ""
+            size_str = f"{att.get('size_kb', 0)} КБ{dim_str}"
+            name_esc = att["name"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            is_img = att.get("is_image", False)
+            btn_text = "Открыть фото" if is_img else "Скачать файл"
+
             if att.get("url"):
                 safe_att_url = att["url"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("'", "%27")
-                att_label = f"<a href='{safe_att_url}' target='_blank' style='color:inherit;text-decoration:underline;'>{att['name']}</a>"
+                html_parts.append(
+                    f"      <div class='attachment-box'>"
+                    f"        <span class='att-icon'>{icon}</span>"
+                    f"        <div class='att-info'>"
+                    f"          <a href='{safe_att_url}' target='_blank' rel='noopener' class='att-name'>{name_esc}</a>"
+                    f"          <span class='att-meta'>{size_str}</span>"
+                    f"        </div>"
+                    f"        <a href='{safe_att_url}' target='_blank' rel='noopener' class='att-btn'>⬇️ {btn_text}</a>"
+                    f"      </div>"
+                )
+            elif att.get("error") == "safety_check_failed":
+                html_parts.append(
+                    f"      <div class='attachment-box att-warning'>"
+                    f"        <span class='att-icon'>{icon}</span>"
+                    f"        <div class='att-info'>"
+                    f"          <span class='att-name'>{name_esc}</span>"
+                    f"          <span class='att-meta'>{size_str}</span>"
+                    f"          <div class='att-warn-text'>⚠️ Заблокировано фильтром безопасности OpenAI (safety check)</div>"
+                    f"        </div>"
+                    f"      </div>"
+                )
             else:
-                att_label = att["name"]
-            html_parts.append(f"      <div class='attachment-box'>📷 {att_label} ({att.get('size_kb', 0)} КБ{dim_str})</div>")
+                html_parts.append(
+                    f"      <div class='attachment-box'>"
+                    f"        <span class='att-icon'>{icon}</span>"
+                    f"        <div class='att-info'>"
+                    f"          <span class='att-name'>{name_esc}</span>"
+                    f"          <span class='att-meta'>{size_str}</span>"
+                    f"        </div>"
+                    f"      </div>"
+                )
 
         # Экранируем текст для безопасного вывода в HTML
         safe_text = m["text"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")

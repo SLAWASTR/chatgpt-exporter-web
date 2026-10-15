@@ -375,17 +375,80 @@ input[type="url"]:focus {
 
 /* Бейджи прикрепленных файлов */
 .attachment-box {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  font-size: 13px;
+  margin-bottom: 12px;
+  color: #f1f5f9;
+}
+
+.att-icon {
+  font-size: 22px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.att-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.att-name {
+  font-weight: 600;
+  color: #60a5fa;
+  text-decoration: none;
+  word-break: break-all;
+}
+
+.att-name:hover {
+  text-decoration: underline;
+  color: #93c5fd;
+}
+
+.att-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.att-btn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   padding: 6px 12px;
-  background: rgba(255, 255, 255, 0.12);
-  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: var(--primary);
+  color: #ffffff !important;
   border-radius: 6px;
+  text-decoration: none !important;
   font-size: 12px;
   font-weight: 600;
-  margin-bottom: 10px;
-  color: #ffffff;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background 0.15s, transform 0.15s;
+}
+
+.att-btn:hover {
+  background: var(--primary-hover);
+  transform: translateY(-1px);
+}
+
+.att-warning {
+  background: rgba(245, 158, 11, 0.1);
+  border-color: rgba(245, 158, 11, 0.3);
+}
+
+.att-warn-text {
+  font-size: 11px;
+  color: #fbbf24;
+  font-weight: 500;
+  margin-top: 2px;
 }
 
 /* Галерея картинок */
