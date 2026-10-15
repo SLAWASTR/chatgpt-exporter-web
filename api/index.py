@@ -9,6 +9,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from chat_exporter import (
     extract_conversation_from_html,
     fetch_chat_html,
+    format_chat_to_html,
     format_chat_to_text,
     normalize_chat_url,
     parse_conversation_data,
@@ -17,13 +18,12 @@ from chat_exporter import (
 
 
 class handler(BaseHTTPRequestHandler):
-    """Serverless обработчик для Vercel / Cloud serverless."""
+    """Serverless обработчик для Vercel."""
 
     def log_message(self, format, *args):
-        pass  # Отключаем лишний вывод
+        pass
 
     def do_OPTIONS(self):
-        # Поддержка CORS preflight
         self.send_response(200)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
@@ -36,7 +36,7 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(
-            json.dumps({"status": "ok", "service": "ChatGPT Chat Exporter API"}).encode("utf-8")
+            json.dumps({"status": "ok", "service": "ChatGPT Chat Exporter API v2"}).encode("utf-8")
         )
 
     def do_POST(self):
@@ -56,6 +56,7 @@ class handler(BaseHTTPRequestHandler):
             html = fetch_chat_html(clean_url)
             conv_data = extract_conversation_from_html(html)
             parsed = parse_conversation_data(conv_data)
+
             txt_content = format_chat_to_text(
                 parsed,
                 source_url=clean_url,
@@ -63,16 +64,27 @@ class handler(BaseHTTPRequestHandler):
                 include_timestamps=include_timestamps,
             )
 
+            html_content = format_chat_to_html(
+                parsed,
+                source_url=clean_url,
+            )
+
             title = parsed.get("title") or f"chat_{share_id}"
-            filename = f"{sanitize_filename(title)}.txt"
+            clean_title = sanitize_filename(title)
+            filename_txt = f"{clean_title}.txt"
+            filename_html = f"{clean_title}.html"
+            filename_pdf = f"{clean_title}.pdf"
 
             response_data = {
                 "success": True,
                 "title": parsed.get("title"),
                 "model_name": parsed.get("model_name"),
                 "messages": parsed.get("messages", []),
-                "filename": filename,
+                "filename": filename_txt,
+                "filename_html": filename_html,
+                "filename_pdf": filename_pdf,
                 "txt_content": txt_content,
+                "html_content": html_content,
             }
 
             self._send_json(200, response_data)

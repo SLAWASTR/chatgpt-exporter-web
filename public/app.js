@@ -1,4 +1,4 @@
-// Клиентская логика для ChatGPT Chat Exporter Web UI
+// Клиентская логика для ChatGPT Chat Exporter Web UI v2 (PDF, HTML, TXT, Images)
 
 let currentExportData = null;
 let isRawView = false;
@@ -7,13 +7,17 @@ document.addEventListener("DOMContentLoaded", () => {
   const exportBtn = document.getElementById("exportBtn");
   const pasteBtn = document.getElementById("pasteBtn");
   const urlInput = document.getElementById("urlInput");
-  const downloadBtn = document.getElementById("downloadBtn");
+  const downloadPdfBtn = document.getElementById("downloadPdfBtn");
+  const downloadHtmlBtn = document.getElementById("downloadHtmlBtn");
+  const downloadTxtBtn = document.getElementById("downloadTxtBtn");
   const copyBtn = document.getElementById("copyBtn");
   const toggleViewBtn = document.getElementById("toggleViewBtn");
 
   exportBtn.addEventListener("click", handleExport);
   pasteBtn.addEventListener("click", handlePaste);
-  downloadBtn.addEventListener("click", handleDownload);
+  downloadPdfBtn.addEventListener("click", handleDownloadPdf);
+  downloadHtmlBtn.addEventListener("click", handleDownloadHtml);
+  downloadTxtBtn.addEventListener("click", handleDownloadTxt);
   copyBtn.addEventListener("click", handleCopy);
   toggleViewBtn.addEventListener("click", handleToggleView);
 
@@ -33,7 +37,6 @@ async function handlePaste() {
       urlInput.focus();
     }
   } catch (err) {
-    // В некоторых браузерах может потребоваться разрешение пользователя
     urlInput.focus();
     alert("Нажмите Cmd+V / Ctrl+V для вставки ссылки из буфера.");
   }
@@ -52,15 +55,11 @@ async function handleExport() {
   const includeHeader = document.getElementById("optHeader").checked;
   const includeTimestamps = document.getElementById("optTime").checked;
 
-  showStatus("loading", "Загрузка и парсинг чата с ChatGPT...");
+  showStatus("loading", "Загрузка, парсинг чата и обработка изображений...");
   setButtonsBusy(true);
 
-  // Определяем эндпоинт API:
-  // Если страница открыта локально или на Vercel/Render/Railway — используем /api
-  const apiEndpoint = "/api";
-
   try {
-    const resp = await fetch(apiEndpoint, {
+    const resp = await fetch("/api", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -94,12 +93,30 @@ function renderResult(data) {
   const resTitle = document.getElementById("resTitle");
   const resModelBadge = document.getElementById("resModelBadge");
   const resMsgCount = document.getElementById("resMsgCount");
+  const resImgBadge = document.getElementById("resImgBadge");
   const chatView = document.getElementById("chatView");
   const rawTxtContent = document.getElementById("rawTxtContent");
 
   resTitle.textContent = data.title || "Чат ChatGPT";
   resModelBadge.textContent = data.model_name || "GPT";
   resMsgCount.textContent = `Сообщений: ${data.messages ? data.messages.length : 0}`;
+
+  // Считаем общее число картинок и вложений
+  let totalImages = 0;
+  let totalAttachments = 0;
+  if (data.messages) {
+    data.messages.forEach((m) => {
+      if (m.images) totalImages += m.images.length;
+      if (m.attachments) totalAttachments += m.attachments.length;
+    });
+  }
+
+  if (totalImages > 0 || totalAttachments > 0) {
+    resImgBadge.style.display = "inline-block";
+    resImgBadge.textContent = `🖼️ Фото/картинок: ${totalImages + totalAttachments}`;
+  } else {
+    resImgBadge.style.display = "none";
+  }
 
   // Рендерим облачки чата
   chatView.innerHTML = "";
@@ -111,26 +128,88 @@ function renderResult(data) {
       const meta = document.createElement("div");
       meta.className = "bubble-meta";
       meta.innerHTML = `<span>${escapeHtml(msg.role_label || msg.role)}</span><span>${escapeHtml(msg.datetime_str || "")}</span>`;
-
-      const content = document.createElement("div");
-      content.className = "bubble-content";
-      content.textContent = msg.text;
-
       bubble.appendChild(meta);
-      bubble.appendChild(content);
+
+      // Если есть прикрепленные пользователем файлы/фото
+      if (msg.attachments && msg.attachments.length > 0) {
+        msg.attachments.forEach((att) => {
+          const attBox = document.createElement("div");
+          attBox.className = "attachment-box";
+          const dimStr = att.dimensions ? ` • ${escapeHtml(att.dimensions)}` : "";
+          attBox.innerHTML = `📷 <strong>${escapeHtml(att.name)}</strong> (${att.size_kb} КБ${dimStr})`;
+          bubble.appendChild(attBox);
+        });
+      }
+
+      // Текст сообщения
+      if (msg.text) {
+        const content = document.createElement("div");
+        content.className = "bubble-content";
+        content.textContent = msg.text;
+        bubble.appendChild(content);
+      }
+
+      // Галерея картинок
+      if (msg.images && msg.images.length > 0) {
+        const gallery = document.createElement("div");
+        gallery.className = "image-gallery";
+        msg.images.forEach((imgUrl) => {
+          const card = document.createElement("div");
+          card.className = "image-card";
+          card.innerHTML = `<a href="${imgUrl}" target="_blank" rel="noopener"><img src="${imgUrl}" loading="lazy" alt="Изображение из чата" /></a>`;
+          gallery.appendChild(card);
+        });
+        bubble.appendChild(gallery);
+      }
+
       chatView.appendChild(bubble);
     });
   }
 
-  // Заполняем сырой текст
   rawTxtContent.textContent = data.txt_content || "";
 
-  // Показываем блок результатов
   resultCard.style.display = "block";
   resultCard.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-function handleDownload() {
+// Экспорт в PDF через красивый системный диалог печати (A4)
+function handleDownloadPdf() {
+  if (!currentExportData || !currentExportData.html_content) return;
+
+  const printWindow = window.open("", "_blank");
+  if (!printWindow) {
+    alert("Разрешите всплывающие окна в браузере, чтобы сохранить PDF.");
+    return;
+  }
+
+  printWindow.document.write(currentExportData.html_content);
+  printWindow.document.close();
+
+  // Даем небольшую паузу для прогрузки стилей и картинок перед вызовом диалога PDF
+  setTimeout(() => {
+    try {
+      printWindow.focus();
+      printWindow.print();
+    } catch (e) {
+      console.error("Print error:", e);
+    }
+  }, 600);
+}
+
+// Скачивание HTML с картинками
+function handleDownloadHtml() {
+  if (!currentExportData || !currentExportData.html_content) return;
+
+  const filename = currentExportData.filename_html || "chatgpt_context.html";
+  const blob = new Blob([currentExportData.html_content], {
+    type: "text/html;charset=utf-8",
+  });
+
+  triggerBlobDownload(blob, filename);
+}
+
+// Скачивание TXT
+function handleDownloadTxt() {
   if (!currentExportData || !currentExportData.txt_content) return;
 
   const filename = currentExportData.filename || "chatgpt_export.txt";
@@ -138,6 +217,10 @@ function handleDownload() {
     type: "text/plain;charset=utf-8",
   });
 
+  triggerBlobDownload(blob, filename);
+}
+
+function triggerBlobDownload(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;

@@ -1,6 +1,6 @@
 """
 Модуль для выгрузки и парсинга публичных чатов ChatGPT (по ссылке 'Share')
-в текстовый формат (.txt).
+в текстовый формат (.txt) и HTML (.html) с полной поддержкой изображений и вложений.
 
 Не требует внешних зависимостей — работает на стандартной библиотеке Python 3.
 """
@@ -20,12 +20,6 @@ def normalize_chat_url(url_or_id: str) -> Tuple[str, str]:
     """
     Принимает ссылку на чат ChatGPT (или UUID) и возвращает нормализованный URL
     и идентификатор шаринга (share_id).
-
-    Поддерживает:
-      - https://chatgpt.com/share/6acfb93c-4640-83eb-9934-045ecac95d7d?ogimg=plain
-      - https://chatgpt.com/share/6acfb93c-4640-83eb-9934-045ecac95d7d/
-      - https://chat.openai.com/share/6acfb93c-4640-83eb-9934-045ecac95d7d
-      - 6acfb93c-4640-83eb-9934-045ecac95d7d
     """
     raw = url_or_id.strip()
     if not raw:
@@ -61,9 +55,7 @@ def normalize_chat_url(url_or_id: str) -> Tuple[str, str]:
 def fetch_chat_html(url: str, timeout: int = 20) -> str:
     """
     Загружает HTML-код публичной страницы чата ChatGPT.
-    Использует SSL-контекст с защитой от сбоев сертификатов на macOS.
     """
-    # Создаем контекст, совместимый с macOS Python
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
@@ -102,14 +94,12 @@ def fetch_chat_html(url: str, timeout: int = 20) -> str:
 def decode_turbo_stream(flat_data: List[Any]) -> Any:
     """
     Десериализует массив TurboJSON / React Router / Remix stream.
-    Преобразует плоский массив с индексами в иерархический Python dict/list/value.
     """
     memo: Dict[int, Any] = {}
     visited = set()
 
     def resolve(idx: Any) -> Any:
         if idx == -5:
-            # -5 в turbo-stream означает undefined
             return None
         if not isinstance(idx, int) or isinstance(idx, bool):
             return idx
@@ -118,7 +108,7 @@ def decode_turbo_stream(flat_data: List[Any]) -> Any:
         if idx in memo:
             return memo[idx]
         if idx in visited:
-            return None  # защита от циклических ссылок
+            return None
 
         visited.add(idx)
         val = flat_data[idx]
@@ -127,7 +117,6 @@ def decode_turbo_stream(flat_data: List[Any]) -> Any:
             memo[idx] = val
             return val
         elif isinstance(val, list):
-            # Проверка специальных тегов TurboStream (например, ['P', 644] - Promise)
             if len(val) == 2 and val[0] in ("P", "D", "B", "S", "E"):
                 memo[idx] = val
                 return val
@@ -168,7 +157,6 @@ def decode_turbo_stream(flat_data: List[Any]) -> Any:
 def find_conversation_in_tree(obj: Any) -> Optional[Dict[str, Any]]:
     """
     Рекурсивно находит объект диалога в распарсенном дереве состояний.
-    Ищет словарь, содержащий 'linear_conversation' или 'mapping' с 'title'.
     """
     if isinstance(obj, dict):
         if "linear_conversation" in obj and isinstance(obj["linear_conversation"], list):
@@ -190,13 +178,7 @@ def find_conversation_in_tree(obj: Any) -> Optional[Dict[str, Any]]:
 def extract_conversation_from_html(html: str) -> Dict[str, Any]:
     """
     Извлекает данные чата из HTML-кода страницы.
-    Поддерживает:
-      1) streamController.enqueue(...) (React Router / Remix TurboStream)
-      2) window.__remixContext / window.__reactRouterContext
-      3) <script id="__NEXT_DATA__">
-      4) Прямой поиск JSON-объектов с serverResponse
     """
-    # 1. Поиск вызовов streamController.enqueue(...)
     marker = "streamController.enqueue("
     pos = 0
     while True:
@@ -226,7 +208,6 @@ def extract_conversation_from_html(html: str) -> Dict[str, Any]:
 
         pos = script_end if script_end != -1 else start + 1
 
-    # 2. Поиск __reactRouterContext / __remixContext
     for ctx_pattern in [
         r"window\.__reactRouterContext\s*=\s*(\{.*?\});",
         r"window\.__remixContext\s*=\s*(\{.*?\});",
@@ -241,7 +222,6 @@ def extract_conversation_from_html(html: str) -> Dict[str, Any]:
             except Exception:
                 pass
 
-    # 3. Поиск __NEXT_DATA__
     next_match = re.search(
         r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL
     )
@@ -254,65 +234,38 @@ def extract_conversation_from_html(html: str) -> Dict[str, Any]:
         except Exception:
             pass
 
-    # 4. Fallback: поиск фрагментов JSON с conversation_id / mapping
-    json_blocks = re.findall(r'<script[^>]*type="application/json"[^>]*>(.*?)</script>', html, re.DOTALL)
-    for block in json_blocks:
-        try:
-            parsed = json.loads(block)
-            conv = find_conversation_in_tree(parsed)
-            if conv:
-                return conv
-        except Exception:
-            pass
-
     raise RuntimeError(
         "Не удалось извлечь данные диалога из страницы. "
         "Возможно, структура страницы ChatGPT обновилась или ссылка недоступна."
     )
 
 
-def extract_message_text(content: Optional[Dict[str, Any]]) -> str:
+def clean_chatgpt_text(text: str) -> str:
     """
-    Извлекает текст из структуры content сообщения.
-    Корректно обрабатывает текстовые блоки, изображения и служебные структуры.
+    Очищает внутренние служебные токены ChatGPT Search, карт и цитат.
+    Превращает \\ue200map\\ue201 в читаемый блок 📍 [Карта мест].
     """
-    if not content:
+    if not text:
         return ""
-
-    parts = content.get("parts", [])
-    text_chunks: List[str] = []
-
-    for p in parts:
-        if isinstance(p, str):
-            text_chunks.append(p)
-        elif isinstance(p, dict):
-            if "text" in p and isinstance(p["text"], str):
-                text_chunks.append(p["text"])
-            elif p.get("content_type") == "image_asset_pointer":
-                text_chunks.append("[Изображение]")
-            elif p.get("content_type") == "audio_asset_pointer":
-                text_chunks.append("[Аудиозапись]")
-            elif "asset_pointer" in p:
-                text_chunks.append("[Вложение]")
-            else:
-                # Если неизвестная структура со словарем
-                val_text = p.get("val") or p.get("value")
-                if val_text and isinstance(val_text, str):
-                    text_chunks.append(val_text)
-        elif isinstance(p, list):
-            text_chunks.extend(str(item) for item in p)
-
-    return "\n".join(text_chunks)
+    # Заменяем служебные теги карты
+    text = re.sub(r"[\ue200\ue201]map[\ue200\ue201]?", "📍 [Карта мест / Магазины]", text)
+    # Убираем внутренние служебные цитаты вида citeturn0search3
+    text = re.sub(r"[\ue200\ue201]cite[^\ue200\ue201]*[\ue200\ue201]?", "", text)
+    # Убираем служебные сущности вида entity...
+    text = re.sub(r"[\ue200\ue201]entity[^\ue200\ue201]*[\ue200\ue201]?", "", text)
+    # Удаляем любые оставшиеся непечатаемые спецсимволы Private Use Area
+    text = re.sub(r"[\ue200-\ue205]", "", text)
+    return text.strip()
 
 
 def parse_conversation_data(conv_data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Приводит сырые данные диалога к структурированному виду:
+    Приводит сырые данные диалога к структурированному виду с извлечением:
       - title: название чата
       - create_time: время создания
       - update_time: время обновления
       - model_name: название модели (GPT-4, GPT-6 и т.д.)
-      - messages: список сообщений [{'role', 'role_label', 'text', 'timestamp', 'datetime_str'}]
+      - messages: список сообщений с текстом, вложениями (attachments) и картинками (images)
     """
     title = conv_data.get("title") or "Чат ChatGPT"
     create_time = conv_data.get("create_time")
@@ -321,17 +274,14 @@ def parse_conversation_data(conv_data: Dict[str, Any]) -> Dict[str, Any]:
     model_info = conv_data.get("model") or {}
     model_name = model_info.get("title") or model_info.get("slug") or conv_data.get("default_model_slug") or ""
 
-    # Извлечение узлов диалога
     raw_nodes: List[Dict[str, Any]] = []
 
     if conv_data.get("linear_conversation"):
         raw_nodes = conv_data["linear_conversation"]
     elif conv_data.get("mapping"):
         mapping = conv_data["mapping"]
-        # Восстанавливаем цепочку сообщений от current_node к корню
         curr = conv_data.get("current_node")
         if not curr or curr not in mapping:
-            # Ищем лист без детей
             leaves = [nid for nid, node in mapping.items() if not node.get("children")]
             curr = leaves[0] if leaves else None
 
@@ -355,22 +305,71 @@ def parse_conversation_data(conv_data: Dict[str, Any]) -> Dict[str, Any]:
 
         author = msg.get("author") or {}
         role = author.get("role", "")
-        content = msg.get("content") or {}
-        text = extract_message_text(content).strip()
+        # Игнорируем внутренние скрытые плагины/инструменты (The output of this plugin was redacted)
+        if role in ("tool", "system"):
+            continue
 
-        # Фильтрация пустых системных сообщений и заглушек
-        if not text:
+        meta = msg.get("metadata") or {}
+        content = msg.get("content") or {}
+
+        # 1. Извлекаем прикрепленные пользователем файлы/фото
+        attachments: List[Dict[str, Any]] = []
+        for att in meta.get("attachments", []):
+            name = att.get("name") or "Прикрепленное фото"
+            sz_bytes = att.get("size") or 0
+            sz_kb = sz_bytes // 1024
+            w = att.get("width")
+            h = att.get("height")
+            dim = f"{w}x{h}" if w and h else ""
+            attachments.append({
+                "name": name,
+                "size_kb": sz_kb,
+                "dimensions": dim,
+                "mime_type": att.get("mime_type", ""),
+                "id": att.get("id", ""),
+            })
+
+        # 2. Извлекаем текст и ссылки на изображения
+        parts = content.get("parts", [])
+        text_parts: List[str] = []
+        images: List[str] = []
+
+        for p in parts:
+            if isinstance(p, str):
+                text_parts.append(p)
+                # Ищем картинки в Markdown ![alt](url)
+                for img_match in re.finditer(r"!\[(.*?)\]\((https?://[^\s\)]+)\)", p):
+                    img_url = img_match.group(2)
+                    if img_url not in images:
+                        images.append(img_url)
+            elif isinstance(p, dict):
+                # Внутренние структуры DALL-E или картинки
+                if "image_url" in p and p["image_url"] not in images:
+                    images.append(p["image_url"])
+                elif "url" in p and p["url"] not in images:
+                    images.append(p["url"])
+                elif "text" in p and isinstance(p["text"], str):
+                    text_parts.append(p["text"])
+
+        # 3. Извлекаем картинки из поиска/карт (content_references safe_urls)
+        for cr in meta.get("content_references", []):
+            for u in cr.get("safe_urls", []):
+                if u and ("images.openai.com" in u or any(u.lower().endswith(ext) for ext in [".jpg", ".png", ".webp", ".jpeg"])):
+                    if u not in images:
+                        images.append(u)
+
+        raw_text = "\n".join(text_parts).strip()
+        clean_text = clean_chatgpt_text(raw_text)
+
+        # Пропускаем технические заглушки
+        if clean_text == "Original custom instructions no longer available":
             continue
-        if role == "user" and text == "Original custom instructions no longer available":
-            continue
-        if role == "system" and not text:
+        if not clean_text and not attachments and not images:
             continue
 
         role_label = {
             "user": "Пользователь",
             "assistant": "ChatGPT",
-            "system": "Система",
-            "tool": "Инструмент",
         }.get(role, role.capitalize() if role else "Сообщение")
 
         ts = msg.get("create_time")
@@ -384,7 +383,9 @@ def parse_conversation_data(conv_data: Dict[str, Any]) -> Dict[str, Any]:
         messages.append({
             "role": role,
             "role_label": role_label,
-            "text": text,
+            "text": clean_text,
+            "attachments": attachments,
+            "images": images,
             "timestamp": ts,
             "datetime_str": dt_str,
         })
@@ -405,7 +406,8 @@ def format_chat_to_text(
     include_timestamps: bool = True,
 ) -> str:
     """
-    Форматирует распарсенный чат в красивый текстовый документ (.txt).
+    Форматирует распарсенный чат в текстовый документ (.txt).
+    Включает информацию о прикрепленных файлах и ссылки на изображения.
     """
     lines: List[str] = []
     separator_major = "=" * 80
@@ -443,9 +445,22 @@ def format_chat_to_text(
         else:
             lines.append(f"[{role_label}]")
 
-        lines.append(m["text"])
+        # Выводим инфо о прикрепленных фото/файлах
+        for att in m.get("attachments", []):
+            dim_str = f", {att['dimensions']}" if att.get("dimensions") else ""
+            lines.append(f"📷 [Прикрепленный файл: {att['name']} ({att.get('size_kb', 0)} КБ{dim_str})]")
 
-        # Разделитель между сообщениями (кроме последнего)
+        if m["text"]:
+            lines.append(m["text"])
+
+        # Выводим ссылки на изображения
+        images = m.get("images", [])
+        if images:
+            lines.append("")
+            lines.append(f"🖼️ [Изображения / Карточки поиска ({len(images)} шт.):]")
+            for img_idx, img_url in enumerate(images, 1):
+                lines.append(f"   {img_idx}. {img_url}")
+
         if i < len(messages) - 1:
             lines.append("")
             lines.append(separator_minor)
@@ -460,6 +475,181 @@ def format_chat_to_text(
     return "\n".join(lines)
 
 
+def format_chat_to_html(
+    parsed: Dict[str, Any],
+    source_url: Optional[str] = None,
+) -> str:
+    """
+    Генерирует автономный HTML-документ (.html) с красивой версткой,
+    полной поддержкой изображений и оптимизацией под печать/сохранение в PDF (A4).
+    """
+    title = parsed.get("title", "Чат ChatGPT")
+    model_name = parsed.get("model_name", "ChatGPT")
+
+    create_ts = parsed.get("create_time")
+    date_str = ""
+    if create_ts:
+        try:
+            date_str = datetime.datetime.fromtimestamp(create_ts).strftime("%d.%m.%Y %H:%M")
+        except Exception:
+            date_str = ""
+
+    html_parts = [
+        "<!DOCTYPE html>",
+        "<html lang='ru'>",
+        "<head>",
+        "  <meta charset='UTF-8'>",
+        "  <meta name='viewport' content='width=device-width, initial-scale=1.0'>",
+        f"  <title>{title} — Экспорт ChatGPT</title>",
+        "  <style>",
+        "    :root {",
+        "      --bg: #f8fafc;",
+        "      --text: #0f172a;",
+        "      --user-bg: #e0e7ff;",
+        "      --user-border: #6366f1;",
+        "      --assistant-bg: #ffffff;",
+        "      --assistant-border: #cbd5e1;",
+        "    }",
+        "    * { box-sizing: border-box; margin: 0; padding: 0; }",
+        "    body {",
+        "      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;",
+        "      background: var(--bg);",
+        "      color: var(--text);",
+        "      line-height: 1.6;",
+        "      padding: 30px 20px;",
+        "    }",
+        "    .container { max-width: 860px; margin: 0 auto; }",
+        "    .header {",
+        "      background: #ffffff;",
+        "      border: 1px solid #e2e8f0;",
+        "      border-radius: 12px;",
+        "      padding: 20px;",
+        "      margin-bottom: 24px;",
+        "      box-shadow: 0 2px 4px rgba(0,0,0,0.05);",
+        "    }",
+        "    .header h1 { font-size: 22px; font-weight: 700; margin-bottom: 6px; }",
+        "    .header-meta { font-size: 13px; color: #64748b; }",
+        "    .instruction-badge {",
+        "      margin-top: 12px;",
+        "      padding: 10px 14px;",
+        "      background: #eff6ff;",
+        "      border-left: 4px solid #3b82f6;",
+        "      border-radius: 4px;",
+        "      font-size: 13px;",
+        "      color: #1e40af;",
+        "    }",
+        "    .chat-flow { display: flex; flex-direction: column; gap: 20px; }",
+        "    .message {",
+        "      border-radius: 12px;",
+        "      padding: 18px;",
+        "      background: #ffffff;",
+        "      border: 1px solid #e2e8f0;",
+        "      page-break-inside: avoid;",
+        "    }",
+        "    .message.user {",
+        "      background: var(--user-bg);",
+        "      border: 1px solid var(--user-border);",
+        "    }",
+        "    .message.assistant {",
+        "      background: var(--assistant-bg);",
+        "      border: 1px solid var(--assistant-border);",
+        "    }",
+        "    .msg-header {",
+        "      display: flex;",
+        "      justify-content: space-between;",
+        "      font-size: 12px;",
+        "      font-weight: 700;",
+        "      text-transform: uppercase;",
+        "      letter-spacing: 0.5px;",
+        "      margin-bottom: 10px;",
+        "      color: #475569;",
+        "    }",
+        "    .msg-body { font-size: 15px; white-space: pre-wrap; word-break: break-word; }",
+        "    .attachment-box {",
+        "      display: inline-flex;",
+        "      align-items: center;",
+        "      gap: 8px;",
+        "      padding: 8px 12px;",
+        "      background: #f1f5f9;",
+        "      border: 1px solid #cbd5e1;",
+        "      border-radius: 8px;",
+        "      font-size: 13px;",
+        "      font-weight: 600;",
+        "      margin-bottom: 12px;",
+        "      color: #334155;",
+        "    }",
+        "    .image-grid {",
+        "      display: grid;",
+        "      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));",
+        "      gap: 12px;",
+        "      margin-top: 14px;",
+        "    }",
+        "    .image-card {",
+        "      border-radius: 8px;",
+        "      overflow: hidden;",
+        "      border: 1px solid #e2e8f0;",
+        "      background: #f8fafc;",
+        "    }",
+        "    .image-card img {",
+        "      width: 100%;",
+        "      height: 180px;",
+        "      object-fit: cover;",
+        "      display: block;",
+        "    }",
+        "    @media print {",
+        "      body { background: #ffffff; padding: 0; }",
+        "      .container { max-width: 100%; }",
+        "      .header { box-shadow: none; border-color: #cbd5e1; }",
+        "      .message { box-shadow: none; border: 1px solid #cbd5e1; }",
+        "      .image-card img { height: 140px; }",
+        "    }",
+        "  </style>",
+        "</head>",
+        "<body>",
+        "  <div class='container'>",
+        "    <header class='header'>",
+        f"      <h1>💬 {title}</h1>",
+        f"      <div class='header-meta'>Модель: <strong>{model_name}</strong> • Дата: {date_str}</div>",
+        "      <div class='instruction-badge'>💡 <strong>Для продолжения контекста в новом чате ChatGPT:</strong> Прикрепите этот файл через скрепку 📎 в новый чат, и ChatGPT продолжит диалог с полным пониманием всей истории и картинок.</div>",
+        "    </header>",
+        "    <div class='chat-flow'>",
+    ]
+
+    for m in parsed.get("messages", []):
+        role_class = "user" if m["role"] == "user" else "assistant"
+        role_label = m["role_label"]
+        dt_str = m.get("datetime_str", "")
+
+        html_parts.append(f"    <div class='message {role_class}'>")
+        html_parts.append(f"      <div class='msg-header'><span>{role_label}</span><span>{dt_str}</span></div>")
+
+        for att in m.get("attachments", []):
+            dim_str = f" • {att['dimensions']}" if att.get("dimensions") else ""
+            html_parts.append(f"      <div class='attachment-box'>📷 {att['name']} ({att.get('size_kb', 0)} КБ{dim_str})</div>")
+
+        # Экранируем текст для безопасного вывода в HTML
+        safe_text = m["text"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        html_parts.append(f"      <div class='msg-body'>{safe_text}</div>")
+
+        images = m.get("images", [])
+        if images:
+            html_parts.append("      <div class='image-grid'>")
+            for img_url in images:
+                html_parts.append(f"        <div class='image-card'><a href='{img_url}' target='_blank'><img src='{img_url}' loading='lazy' alt='Изображение из чата' /></a></div>")
+            html_parts.append("      </div>")
+
+        html_parts.append("    </div>")
+
+    html_parts.extend([
+        "    </div>",
+        "  </div>",
+        "</body>",
+        "</html>",
+    ])
+
+    return "\n".join(html_parts)
+
+
 def sanitize_filename(name: str) -> str:
     """
     Очищает строку для безопасного использования в качестве имени файла.
@@ -469,7 +659,6 @@ def sanitize_filename(name: str) -> str:
     clean = clean.strip(" .")
     if not clean:
         clean = "chatgpt_export"
-    # Ограничиваем длину имени файла
     return clean[:120]
 
 
@@ -482,9 +671,6 @@ def export_chat(
 ) -> Tuple[str, Dict[str, Any]]:
     """
     Основная функция: скачивает, парсит и сохраняет чат в файл .txt.
-
-    Возвращает:
-      (абсолютный_путь_к_сохраненному_файлу, словарь_с_данными_чата)
     """
     clean_url, share_id = normalize_chat_url(url_or_id)
     html = fetch_chat_html(clean_url)
@@ -497,7 +683,6 @@ def export_chat(
         include_timestamps=include_timestamps,
     )
 
-    # Определяем имя и путь к файлу
     if output_path:
         final_path = os.path.abspath(output_path)
     else:
@@ -506,7 +691,6 @@ def export_chat(
         target_dir = os.path.abspath(output_dir or os.getcwd())
         final_path = os.path.join(target_dir, filename)
 
-    # Создаем директорию, если не существует
     os.makedirs(os.path.dirname(final_path), exist_ok=True)
 
     with open(final_path, "w", encoding="utf-8") as f:

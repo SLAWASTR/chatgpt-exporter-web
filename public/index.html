@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>ChatGPT Chat Exporter — Экспорт чатов ChatGPT в .txt</title>
-  <meta name="description" content="Бесплатный онлайн-инструмент для выгрузки любого публичного чата ChatGPT в текстовый файл (.txt)">
+  <title>ChatGPT Chat Exporter — Экспорт чатов ChatGPT в PDF, HTML и TXT</title>
+  <meta name="description" content="Бесплатный инструмент для выгрузки любого публичного чата ChatGPT в PDF, HTML и TXT с полной поддержкой картинок для переноса контекста.">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>💬</text></svg>">
   <link rel="stylesheet" href="style.css">
 </head>
@@ -15,12 +15,12 @@
         <span class="logo-icon">💬</span>
         <div>
           <h1>ChatGPT Chat Exporter</h1>
-          <p class="subtitle">Экспорт любого публичного чата в чистый текстовый файл (.txt)</p>
+          <p class="subtitle">Экспорт диалогов с картинками в <strong>PDF</strong>, <strong>HTML</strong> и <strong>TXT</strong> для переноса контекста</p>
         </div>
       </div>
-      <a href="https://github.com" target="_blank" rel="noopener" class="github-badge" id="githubLink">
+      <a href="https://github.com/SLAWASTR/chatgpt-exporter-web" target="_blank" rel="noopener" class="github-badge" id="githubLink">
         <svg height="20" width="20" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
-        GitHub
+        GitHub @SLAWASTR
       </a>
     </header>
 
@@ -31,7 +31,7 @@
           <input 
             type="url" 
             id="urlInput" 
-            placeholder="https://chatgpt.com/share/6acfb93c-4640-83eb-9934-045ecac95d7d" 
+            placeholder="https://chatgpt.com/share/..." 
             autocomplete="off"
             spellcheck="false"
           >
@@ -64,22 +64,34 @@
           <div class="result-title-box">
             <h2 id="resTitle" class="result-title">Тема диалога</h2>
             <div class="result-meta">
-              <span id="resModelBadge" class="badge">GPT-6</span>
+              <span id="resModelBadge" class="badge">GPT</span>
               <span id="resMsgCount">Сообщений: 0</span>
+              <span id="resImgBadge" class="badge badge-img" style="display: none;">0 картинок</span>
             </div>
           </div>
 
+          <!-- Панель кнопок экспорта -->
           <div class="actions-group">
-            <button type="button" class="btn btn-success" id="downloadBtn">
-              ⬇️ Скачать .txt
+            <button type="button" class="btn btn-pdf" id="downloadPdfBtn" title="Идеально для загрузки в новый чат ChatGPT">
+              📄 Скачать PDF
             </button>
-            <button type="button" class="btn btn-secondary" id="copyBtn">
-              📋 Скопировать
+            <button type="button" class="btn btn-html" id="downloadHtmlBtn" title="Открыть как страницу со всеми картинками">
+              🌐 Скачать HTML
+            </button>
+            <button type="button" class="btn btn-success" id="downloadTxtBtn" title="Обычный текстовый файл">
+              ⬇️ Скачать TXT
+            </button>
+            <button type="button" class="btn btn-secondary" id="copyBtn" title="Скопировать текст в буфер">
+              📋 Копировать
             </button>
             <button type="button" class="btn btn-ghost" id="toggleViewBtn">
-              📝 Исходный .txt
+              📝 Сырой .txt
             </button>
           </div>
+        </div>
+
+        <div class="context-tip">
+          💡 <strong>Совет для переноса контекста:</strong> Нажмите <strong>«Скачать PDF»</strong> или <strong>«Скачать HTML»</strong>, откройте <strong>новый чат ChatGPT</strong>, нажмите на скрепку 📎 и прикрепите скачанный файл — ChatGPT сразу подхватит всю историю, карты и фотографии!
         </div>
 
         <!-- Вид чата (облачки) -->
@@ -93,18 +105,19 @@
 
       <!-- Информационный блок -->
       <div class="card info-card">
-        <h3>ℹ️ Как это работает?</h3>
+        <h3>ℹ️ Как перенести контекст в новый чат?</h3>
         <ul>
-          <li><strong>1.</strong> В ChatGPT нажмите кнопку <strong>Поделиться</strong> (Share) в правом верхнем углу нужного диалога и скопируйте ссылку.</li>
-          <li><strong>2.</strong> Вставьте ссылку в поле выше и нажмите <strong>«Экспорт»</strong>.</li>
-          <li><strong>3.</strong> Получите готовый <strong>.txt</strong> файл со всеми смайлами, кодом, переносами строк и датами!</li>
+          <li><strong>1.</strong> В старом чате ChatGPT нажмите кнопку <strong>Поделиться</strong> (Share) в правом верхнем углу и скопируйте ссылку.</li>
+          <li><strong>2.</strong> Вставьте ссылку выше и нажмите <strong>«Экспорт»</strong>.</li>
+          <li><strong>3.</strong> Нажмите <strong>«📄 Скачать PDF»</strong> или <strong>«🌐 Скачать HTML»</strong> (в них бережно сохранены все фотографии, вложения и карты).</li>
+          <li><strong>4.</strong> Откройте <strong>новый чат в ChatGPT</strong>, прикрепите файл через скрепку 📎 и продолжайте диалог без потери памяти!</li>
         </ul>
       </div>
     </main>
 
     <footer class="footer">
-  <p>Разработано с ❤️ автором <a href="https://github.com/SLAWASTR" target="_blank" style="color: #60a5fa; font-weight: 600; text-decoration: none;">@SLAWASTR</a> • Без рекламы и трекеров</p>
-</footer>
+      <p>Разработано с ❤️ автором <a href="https://github.com/SLAWASTR" target="_blank" rel="noopener" class="author-link">@SLAWASTR</a> • Без рекламы и трекеров</p>
+    </footer>
   </div>
 
   <script src="app.js"></script>

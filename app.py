@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Автономный веб-сервер для ChatGPT Chat Exporter.
-Работает локально или на любом хостинге (Render, Railway, Hugging Face, Fly.io, VPS).
-Использует исключительно стандартную библиотеку Python.
+Автономный веб-сервер для ChatGPT Chat Exporter v2.
+Поддерживает экспорт в PDF, HTML, TXT, галерею изображений и вложений.
+Работает локально или на любом облачном хостинге.
 """
 
 import json
@@ -19,6 +19,7 @@ from typing import Optional
 from chat_exporter import (
     extract_conversation_from_html,
     fetch_chat_html,
+    format_chat_to_html,
     format_chat_to_text,
     normalize_chat_url,
     parse_conversation_data,
@@ -31,7 +32,6 @@ PUBLIC_DIR = os.path.join(BASE_DIR, "public")
 
 class StandaloneAppHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
-        # Логируем только ошибки и важные действия
         if len(args) > 1 and str(args[1]).startswith(("4", "5")):
             super().log_message(format, *args)
 
@@ -51,7 +51,6 @@ class StandaloneAppHandler(BaseHTTPRequestHandler):
         else:
             filepath = os.path.join(PUBLIC_DIR, path)
 
-        # Проверка безопасности пути
         if not os.path.abspath(filepath).startswith(PUBLIC_DIR):
             self.send_error(403, "Forbidden")
             return
@@ -96,6 +95,7 @@ class StandaloneAppHandler(BaseHTTPRequestHandler):
                 html = fetch_chat_html(clean_url)
                 conv_data = extract_conversation_from_html(html)
                 parsed_data = parse_conversation_data(conv_data)
+
                 txt_content = format_chat_to_text(
                     parsed_data,
                     source_url=clean_url,
@@ -103,16 +103,24 @@ class StandaloneAppHandler(BaseHTTPRequestHandler):
                     include_timestamps=include_timestamps,
                 )
 
+                html_content = format_chat_to_html(
+                    parsed_data,
+                    source_url=clean_url,
+                )
+
                 title = parsed_data.get("title") or f"chat_{share_id}"
-                filename = f"{sanitize_filename(title)}.txt"
+                clean_title = sanitize_filename(title)
 
                 response_data = {
                     "success": True,
                     "title": parsed_data.get("title"),
                     "model_name": parsed_data.get("model_name"),
                     "messages": parsed_data.get("messages", []),
-                    "filename": filename,
+                    "filename": f"{clean_title}.txt",
+                    "filename_html": f"{clean_title}.html",
+                    "filename_pdf": f"{clean_title}.pdf",
                     "txt_content": txt_content,
+                    "html_content": html_content,
                 }
                 self._send_json(200, response_data)
 
@@ -142,7 +150,6 @@ def find_free_port(start_port: int = 8080) -> int:
 
 
 def run_server(port: Optional[int] = None, auto_open: bool = False):
-    # Порт из переменной окружения (для хостингов типа Render / Heroku / Hugging Face)
     env_port = os.environ.get("PORT")
     final_port = int(env_port) if env_port else (port or find_free_port(8080))
 
@@ -153,7 +160,6 @@ def run_server(port: Optional[int] = None, auto_open: bool = False):
     print(f"\n=======================================================")
     print(f"🚀 Веб-сервер запущен на порту {final_port}")
     print(f"Локальный адрес: {url}")
-    print(f"Для остановки нажмите Ctrl + C")
     print(f"=======================================================\n")
 
     if auto_open:
